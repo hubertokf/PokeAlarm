@@ -86,7 +86,9 @@ class Manager(object):
         self.load_alarms_file(get_path(alarm_file), int(max_attempts))
 
         # Initialize the queue and start the process
-        self.__queue = multiprocessing.Queue()
+
+        self.__pipe_read = None
+        self.__pipe_write = None
         self.__event = multiprocessing.Event()
         self.__process = None
 
@@ -97,7 +99,7 @@ class Manager(object):
 
     # Update the object into the queue
     def update(self, obj):
-        self.__queue.put(obj)
+        self.__pipe_write.put(obj)
 
     # Get the name of this Manager
     def get_name(self):
@@ -105,15 +107,17 @@ class Manager(object):
 
     # Tell the process to finish up and go home
     def stop(self):
-        log.info("Manager {} shutting down... ".format(self.__name)
-                 + "{} items in queue.".format(self.__queue.qsize()))
+        log.info("Manager {} shutting down... ".format(self.__name))
+        # + "{} items in queue.".format(self.__pipe_read.qsize()))
         self.__event.set()
+        self.__cache.clean_and_save()
+        exit(0)
 
     def join(self):
         self.__process.join(timeout=10)
         if self.__process.is_alive():
             log.warning("Manager {} could not be stopped in time!"
-                        + " Forcing process to stop.")
+                        " Forcing process to stop.".format(self.__name))
             self.__process.terminate()
         else:
             log.info("Manager {} successfully stopped!".format(self.__name))
@@ -327,8 +331,10 @@ class Manager(object):
 
     # Start it up
     def start(self):
+        r, w = gipc.pipe()
         self.__process = gipc.start_process(
-            target=self.run, args=(), name=self.__name)
+            target=self.run, args=(r, ), name=self.__name)
+        self.__pipe_write = w
 
     def setup_in_process(self):
         # Set up signal handlers for graceful exit
@@ -356,7 +362,8 @@ class Manager(object):
             alarm.startup_message()
 
     # Main event handler loop
-    def run(self):
+    def run(self, r):
+        self.__pipe_read = r
         self.setup_in_process()
         last_clean = datetime.utcnow()
         while True:  # Run forever and ever
@@ -368,7 +375,7 @@ class Manager(object):
                 last_clean = datetime.utcnow()
 
             try:  # Get next object to process
-                event = self.__queue.get(block=True, timeout=5)
+                event = self.__pipe_read.get()
             except Queue.Empty:
                 # Check if the process should exit process
                 if self.__event.is_set():
@@ -401,6 +408,7 @@ class Manager(object):
             # Explict context yield
             gevent.sleep(0)
         # Save cache and exit
+        print "exit"
         self.__cache.clean_and_save()
         exit(0)
 
